@@ -1,0 +1,8 @@
+* Docker Prune
+https://docs.ansible.com/ansible/latest/collections/community/docker/docker_prune_module.html
+
+* Docker Container
+https://docs.ansible.com/ansible/latest/collections/community/docker/docker_container_module.html
+
+* Aws
+https://docs.ansible.com/ansible/latest/collections/amazon/aws/aws_s3_module.html
