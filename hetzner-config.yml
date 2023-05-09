@@ -1,0 +1,229 @@
+---
+- name: Set up Hetzner root Ubuntu 22.04 instance
+  hosts: hetzner
+  vars:
+    ansible_ssh_user: root
+  tasks:
+    - name: The first phase of preparation (sudo)
+      block:
+        - name: Update APT package index
+          ansible.builtin.apt:
+            update_cache: yes
+
+        - name: Install required packages
+          ansible.builtin.apt:
+            name:
+              - apt-transport-https
+              - ca-certificates
+              - curl
+              - gnupg-agent
+              - software-properties-common
+              - postgresql
+              - postgresql-contrib
+              - python3-pip
+              - libssl-dev
+            state: present
+
+        - name: Install ansible-required pip-packages
+          pip:
+            name:
+              - boto3
+              - botocore
+              - docker
+              - psycopg2-binary
+            executable: pip3
+            state: present
+
+        - name: Add Docker GPG key
+          ansible.builtin.apt_key:
+            url: https://download.docker.com/linux/ubuntu/gpg
+            state: present
+          become: yes
+
+        - name: Add Docker repository
+          ansible.builtin.apt_repository:
+            repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+            state: present
+          become: yes
+
+        - name: Install Docker and Docker Compose
+          ansible.builtin.apt:
+            name:
+              - docker-ce
+              - docker-ce-cli
+              - containerd.io
+            state: present
+          register: docker_installed
+
+        - name: Install Docker Compose with PIP
+          ansible.builtin.pip:
+            name: docker-compose
+            state: present
+          when: docker_installed is changed
+
+        - name: Start and enable Docker service
+          ansible.builtin.systemd:
+            name: docker
+            state: started
+            enabled: yes
+
+        - name: Ensure the Docker group exists
+          ansible.builtin.group:
+            name: docker
+            state: present
+
+        - name: Add user to the Docker group
+          ansible.builtin.user:
+            name: "{{ ansible_ssh_user }}"
+            groups: docker
+            append: yes
+
+      become: yes
+
+    - name: Configure PostgreSQL
+      tags: postgresql
+      block:
+        - name: Ensure PostgreSQL is installed
+          apt:
+            name: postgresql
+            state: present
+
+        - name: Ensure PostgreSQL service is running
+          ansible.builtin.systemd:
+            name: postgresql
+            state: started
+            enabled: yes
+
+        - name: Modify PostgreSQL configuration to allow external connections
+          blockinfile:
+            path: /etc/postgresql/14/main/postgresql.conf
+            marker: "# {mark} ANSIBLE MANAGED BLOCK"
+            insertafter: "^#listen_addresses = 'localhost'"
+            block: |
+              listen_addresses = '*'
+
+        - name: Modify pg_hba.conf to allow external connections
+          blockinfile:
+            path: /etc/postgresql/14/main/pg_hba.conf
+            marker: "# {mark} ANSIBLE MANAGED BLOCK"
+            insertbefore: "^host all all 127.0.0.1/32 md5"
+            block: |
+              host all all 0.0.0.0/0 md5
+              host all all ::/0 md5
+
+        - name: Open port 5432 for PostgreSQL
+          ansible.builtin.ufw:
+            rule: allow
+            port: 5432
+            proto: tcp
+
+        - name: Restart PostgreSQL service for configuration changes to take effect
+          systemd:
+            name: postgresql
+            state: restarted
+
+        # -  name: Create database
+        #    postgresql_db:
+        #      name: telegram
+        #      owner: "{{ db_default_user }}"
+        #      encoding: UTF-8
+        #      lc_collate: en_US.UTF-8
+        #      lc_ctype: en_US.UTF-8
+        #      template: template0
+        #      login_host: "{{ ansible_host }}"
+        #      login_user: "{{ db_default_user }}"
+        #      login_password: "{{ db_password }}"
+
+      become: yes
+
+    - name: Install MongoDB
+      tags: mongodb
+      block:
+        - name: Install required dependencies
+          ansible.builtin.apt:
+            name:
+              - gnupg
+              - dirmngr
+            state: present
+            update_cache: yes
+
+        - name: Add MongoDB repository key
+          ansible.builtin.apt_key:
+            url: https://www.mongodb.org/static/pgp/server-6.0.asc
+            state: present
+
+        - name: Add MongoDB repository
+          ansible.builtin.apt_repository:
+            repo: "deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/6.0 multiverse"
+            state: present
+
+        - name: Update package repository after adding MongoDB repo
+          ansible.builtin.apt:
+            update_cache: yes
+
+        - name: Install MongoDB
+          ansible.builtin.apt:
+            name: mongodb-org
+            state: present
+
+        - name: Enable and start MongoDB service
+          ansible.builtin.systemd:
+            name: mongod
+            state: started
+            enabled: yes
+
+        - name: Open port for external connections
+          ansible.builtin.ufw:
+            rule: allow
+            port: 27017
+            proto: tcp
+
+        - name: Allow external connections to MongoDB
+          ansible.builtin.lineinfile:
+            path: /etc/mongod.conf
+            regexp: '^  bindIp:'
+            line: "  bindIp: 0.0.0.0"
+          notify: Restart MongoDB
+
+        - name: Update MongoDB configuration file to enable authentication
+          ansible.builtin.lineinfile:
+            path: /etc/mongod.conf
+            regexp: "^#?security:"
+            line: "security:"
+            state: present
+
+        - name: Add the authorization line to the configuration file
+          ansible.builtin.lineinfile:
+            path: /etc/mongod.conf
+            regexp: "^#?  authorization:"
+            line: "  authorization: enabled"
+            state: present
+
+      become: yes
+
+      rescue:
+        - name: Reload mongodb deamon
+          ansible.builtin.command:
+            cmd: systemctl daemon-reload
+          become: yes
+
+    - name: Configure MongoDB
+      block:
+        - name: Start and enable MongoDB service
+          ansible.builtin.systemd:
+            name: mongod
+            state: started
+            enabled: yes
+
+      become: yes
+
+  # Get rid of handlers
+  handlers:
+    - name: Restart MongoDB
+      ansible.builtin.systemd:
+        name: mongod
+        state: restarted
+
+      become: yes
+
+
